@@ -24,7 +24,7 @@ import sys
 
 import bzrlib
 if hasattr(bzrlib, "initialize"):
-    bzrlib.initialize()
+    bzrlib.initialize(stdout=sys.stderr)
 
 import bzrlib.plugin
 bzrlib.plugin.load_plugins()
@@ -960,6 +960,9 @@ def get_remote_branch(name, create=False):
 
     branch_path = os.path.join(dirname, 'clone', name)
 
+    # all this could take some doing, so show some progress
+    show_ui(True)
+
     try:
         branch = bzrlib.branch.Branch.open(branch_path,
                                            possible_transports=transports)
@@ -973,6 +976,8 @@ def get_remote_branch(name, create=False):
         except bzrlib.errors.DivergedBranches:
             # use remote branch for now
             branch = remote_branch
+
+    show_ui(False)
 
     proxys[name] = branch
     return branch
@@ -1077,6 +1082,10 @@ def fix_path(alias, orig_url):
     cmd = ['git', 'config', 'remote.%s.url' % alias, "bzr::%s" % abs_url]
     subprocess.call(cmd)
 
+def show_ui(show):
+    if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
+        bzrlib.ui.ui_factory.be_quiet(not show)
+
 def select_marks_dir(alias, gitdir):
     global force_need_fetch
     force_need_fetch = False
@@ -1162,8 +1171,7 @@ def main(args):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
 
-    if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
-        bzrlib.ui.ui_factory.be_quiet(True)
+    show_ui(False)
 
     marksdir = select_marks_dir(alias, gitdir)
     repo = None # will get it later
