@@ -620,7 +620,9 @@ def parse_commit(parser):
         name = ref[len('refs/heads/'):]
         branch = get_remote_branch(name, True)
     else:
-        die('unknown ref')
+        # fall-back to master branch
+        # only the underlying repository shared storage is needed anyway
+        branch = get_remote_branch(master_branch)
 
     commit_mark = parser.get_mark()
     parser.next()
@@ -698,6 +700,17 @@ def parse_reset(parser):
 
     parsed_refs[ref] = mark_to_rev(from_mark)
 
+def select_tag_branch(refs):
+    heads = [ref[len('refs/heads/'):] for ref in refs if ref.startswith('refs/heads')]
+    bname = os.getenv('BZR_BRANCH', None)
+    # environment setting always wins,
+    # otherwise auto-select if only 1 reasonable suggestion
+    if len(branches) == 1 and not bname:
+        bname = branches.keys()[0]
+    if len(heads) == 1 and not bname:
+        bname = heads[0]
+    return bname
+
 def do_export(parser):
     parser.next()
 
@@ -767,9 +780,29 @@ def do_export(parser):
             except bzrlib.errors.NoWorkingTree:
                 pass
         elif ref.startswith('refs/tags/'):
-            # TODO: implement tag push
-            print "error %s pushing tags not supported" % ref
-            continue
+            # the mapping from a branch (which is conceptually a bzr repo) to
+            # a git branch is a bit skewed, since now we do not really know
+            # to which bzr branch/repo to push this tag to
+            # all of them seems excessive, so we will try to pick one cleverly
+            tagbranch = select_tag_branch(parsed_refs)
+            if not tagbranch or not tagbranch in peers:
+                print "error %s set BZR_BRANCH to specify branch to push tag" % ref
+                continue
+            peer = bzrlib.branch.Branch.open(peers[tagbranch],
+                                             possible_transports=transports)
+            name = ref[len('refs/tags/'):]
+            try:
+                existing_target = peer.tags.lookup_tag(name)
+            except bzrlib.errors.NoSuchTag:
+                existing_target = None
+            if not force and existing_target not in (None, revid):
+                print "error %s already exists" % ref
+                continue
+            if existing_target == revid:
+                print "ok %s up to date" % ref
+                continue
+            elif not dry_run:
+                peer.tags.set_tag(name, revid)
         else:
             # transport-helper/fast-export bugs
             continue

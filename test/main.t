@@ -532,4 +532,21 @@ test_expect_success 'push new branch' '
 	test_cmp expected actual
 '
 
+test_expect_success 'push tag' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git tag mytag &&
+	git push origin --tag mytag
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr tags | grep mytag
+	)
+'
+
 test_done
