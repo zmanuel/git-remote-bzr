@@ -618,7 +618,7 @@ def parse_commit(parser):
 
     if ref.startswith('refs/heads/'):
         name = ref[len('refs/heads/'):]
-        branch = get_remote_branch(name)
+        branch = get_remote_branch(name, True)
     else:
         die('unknown ref')
 
@@ -721,11 +721,21 @@ def do_export(parser):
             continue
         if ref.startswith('refs/heads/'):
             name = ref[len('refs/heads/'):]
-            branch = get_remote_branch(name)
+            branch = get_remote_branch(name, True)
             # a proxy branch is now always used
             # following sets it to the targeted ref
             # then we will push from there (diverged or not) minding dry-run
             branch.generate_revision_history(revid)
+
+            if not name in peers and not dry_run:
+                # new branch within repo, or new branch/repo altogether
+                location = bzrlib.urlutils.join(url, name) if parser.repo else url
+                to_transport = bzrlib.transport.get_transport(location)
+                try:
+                    br_to = branch.create_clone_on_transport(to_transport)
+                except:
+                    print "error %s rejected" % ref
+                    continue
 
             if name in peers:
                 peer = bzrlib.branch.Branch.open(peers[name],
@@ -815,10 +825,17 @@ def ref_is_valid(name):
 def do_list(parser):
     global master_branch
 
+    for_push = (parser.line.find('for-push') >= 0)
+    parser.repo = get_repo(url, alias, for_push)
+
     for name in branches:
         if not master_branch:
             master_branch = name
         print "? refs/heads/%s" % name
+
+    if not master_branch:
+        print
+        return
 
     branch = get_remote_branch(master_branch)
     branch.lock_read()
@@ -845,7 +862,49 @@ def clone(path, remote_branch):
     repo.fetch(remote_branch.repository)
     return remote_branch.sprout(bdir, repository=repo)
 
-def get_remote_branch(name):
+def create_proxy_branch(name):
+    def try_branch_open(location):
+        bb = None
+        if os.path.exists(location):
+            try:
+                bb = bzrlib.branch.Branch.open(location)
+            except:
+                pass
+        return bb
+    # just need another place to store a branch tip
+    # so clone something we have
+    mb = None
+    for b in branches:
+        location = os.path.join(dirname, 'clone', b)
+        mb = try_branch_open(location)
+        if mb:
+            break
+    # no suitable source branch within this repo
+    # maybe repo does not exist yet, let's broaden search
+    if not mb:
+        for d in os.listdir(os.path.join(gitdir, 'bzr')):
+            cdir = os.path.join(gitdir, 'bzr', d, 'clone')
+            if d == '.bzr' or not os.path.isdir(cdir):
+                continue
+            for b in os.listdir(cdir):
+                location = os.path.join(cdir, b)
+                mb = try_branch_open(location)
+                if mb:
+                    break
+            if mb:
+                break
+    if not mb:
+        die('could not create branch; fetch first')
+    location = os.path.join(dirname, 'clone', name)
+    # ensure clean slate start
+    if os.path.exists(location):
+        shutil.rmtree(location)
+    cdir = os.path.join(dirname, 'clone')
+    if not os.path.exists(cdir):
+        os.makedirs(cdir)
+    return mb.bzrdir.sprout(location, create_tree_if_local=False).open_branch()
+
+def get_remote_branch(name, create=False):
     global proxys
     if not 'proxys' in globals():
         proxys = {}
@@ -853,6 +912,11 @@ def get_remote_branch(name):
     # (which would amount to every commit when pushing)
     branch = proxys.get(name, None)
     if branch:
+        return branch
+
+    if not name in branches and create:
+        branch = create_proxy_branch(name)
+        proxys[name] = branch
         return branch
 
     remote_branch = bzrlib.branch.Branch.open(branches[name],
@@ -899,9 +963,15 @@ def find_branches(repo):
         else:
             yield name, branch.base
 
-def get_repo(url, alias):
+def get_repo(url, alias, nothrow=True):
     normal_url = bzrlib.urlutils.normalize_url(url)
-    origin = bzrlib.bzrdir.BzrDir.open(url, possible_transports=transports)
+    try:
+        origin = bzrlib.bzrdir.BzrDir.open(url, possible_transports=transports)
+    except bzrlib.errors.NotBranchError:
+        # allow create-upon-push to LaunchPad
+        if nothrow and url[0:3] == 'lp:':
+            return None
+        raise
     is_local = isinstance(origin.transport, bzrlib.transport.local.LocalTransport)
     is_local = False if local_proxy else is_local
 
@@ -1011,6 +1081,7 @@ def main(args):
     global is_tmp
     global branches, peers
     global transports
+    global url, alias
     global force
     global dry_run
     global master_branch
@@ -1062,7 +1133,7 @@ def main(args):
         bzrlib.ui.ui_factory.be_quiet(True)
 
     marksdir = select_marks_dir(alias, gitdir)
-    repo = get_repo(url, alias)
+    repo = None # will get it later
 
     marks_path = os.path.join(marksdir, 'marks-int')
     marks = Marks(marks_path)

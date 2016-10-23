@@ -508,4 +508,28 @@ test_expect_success 'migration to shared marks' '
 	test -f gitrepo/.git/bzr/marks-int
 '
 
+test_expect_success 'push new branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git branch new &&
+	git push origin new
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids >../expected
+	) &&
+
+	(
+	cd bzrrepo/new &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual
+'
+
 test_done
