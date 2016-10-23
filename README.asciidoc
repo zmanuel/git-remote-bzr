@@ -10,7 +10,7 @@ To enable this, simply add the 'git-remote-bzr' script anywhere in your
 `$PATH`:
 
 --------------------------------------
-wget https://raw.github.com/felipec/git-remote-bzr/master/git-remote-bzr -O ~/bin/git-remote-bzr
+wget https://raw.github.com/mnauw/git-remote-bzr/master/git-remote-bzr -O ~/bin/git-remote-bzr
 chmod +x ~/bin/git-remote-bzr
 --------------------------------------
 
@@ -82,5 +82,4 @@ https://github.com/felipec/git/wiki/Comparison-of-git-remote-bzr-alternatives[he
 
 == Contributing ==
 
-Send your patches to the mailing list git-fc@googlegroups.com (no need to
-subscribe).
+Please file an issue with some patches or a pull request.
