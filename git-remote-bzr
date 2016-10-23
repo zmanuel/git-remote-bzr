@@ -810,12 +810,43 @@ def do_export(parser):
 
     return success
 
+def delete_branch(parser, ref):
+    bname = ref[len('refs/heads/'):]
+    # delete local (proxy or target)
+    ok = True
+    try:
+        if bname in branches:
+            branch = get_remote_branch(bname)
+            branch.bzrdir.destroy_branch(branch.name)
+            branch = None
+            branch_path = os.path.join(dirname, 'clone', bname)
+            if os.path.exists(branch_path):
+                shutil.rmtree(branch_path)
+        if bname in peers:
+            peer = bzrlib.branch.Branch.open(peers[bname],
+                                            possible_transports=transports)
+            peer.bzrdir.destroy_branch(peer.name)
+    except:
+        ok = False
+    # delete private ref
+    if ok:
+        pref = '%s/heads/%s' % (prefix, bname)
+        subprocess.call(['git', 'update-ref', '-d', pref])
+    return ok
+
 def do_push_refspec(parser, refspec):
     global force
 
     force = (refspec[0] == '+')
     refs = refspec.strip('+').split(':')
-    # only basic refs supported, no renames etc
+    # check for delete
+    if (not refs[0]) and refs[1].startswith('refs/heads'):
+        if not dry_run and not delete_branch(parser, refs[1]):
+            print "error %s could not delete"% (refs[1])
+        else:
+            print "ok %s" % (refs[1])
+        return
+    # only basic refs supported, no renames
     # may not be all one would expect from a native push (but hg is not native)
     # but it covers at least as much as the export capability supports
     if refs[0] != refs[1] or \
@@ -878,6 +909,11 @@ def do_capabilities(parser):
     print "*export-marks %s" % path
 
     print "option"
+    # nothing really depends on the private refs being up to date
+    # (export is limited anyway by the current git marks)
+    # and they are not always updated correctly (dry-run, bookmark delete, ...)
+    # (might resolve some dry-run breakage also)
+    print "no-private-update"
     print
 
 class InvalidOptionValue(Exception):

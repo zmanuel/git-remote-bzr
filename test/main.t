@@ -549,4 +549,20 @@ test_expect_success 'push tag' '
 	)
 '
 
+test_expect_success 'delete branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git branch new &&
+	git push origin new &&
+	git push origin :new
+	) &&
+
+	# unfortunately not all is deleted, but at least this much
+	test ! -e bzrrepo/new/.bzr/branch
+'
+
 test_done
