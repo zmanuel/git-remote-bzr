@@ -615,4 +615,25 @@ test_expect_success 'notes' '
 	test_cmp expected actual
 '
 
+test_expect_success 'push updates notes' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	echo extra > content &&
+	git commit -a -m extra &&
+	git push origin master
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids | grep revision-id | sed "s/revision.id:.//" > ../expected
+	) &&
+
+	git --git-dir=gitrepo/.git log --pretty="tformat:%N" --notes=bzr | grep .. > actual &&
+	test_cmp expected actual
+'
+
 test_done

@@ -162,6 +162,7 @@ class ParserContext:
         # known context attributes
         self.localref = None
         self.remoteref = None
+        self.revs = []
 
 class Parser:
 
@@ -724,6 +725,7 @@ def parse_commit(parser):
 
     parsed_refs[ref] = revid
     marks.new_mark(revid, commit_mark)
+    parser.context.revs.append(revid)
 
 def parse_reset(parser):
     ref = parser[1]
@@ -920,7 +922,7 @@ def delete_branch(parser, ref):
         subprocess.call(['git', 'update-ref', '-d', pref])
     return ok
 
-def do_push_refspec(parser, refspec):
+def do_push_refspec(parser, refspec, revs):
     global force
 
     force = (refspec[0] == '+')
@@ -961,12 +963,14 @@ def do_push_refspec(parser, refspec):
     export = subprocess.Popen(cmd, stdin=None, stdout=subprocess.PIPE)
     ok = False
     try:
-        ok = do_export(Parser(parser.repo, export.stdout, ctx))
+        nparser = Parser(parser.repo, export.stdout, ctx)
+        ok = do_export(nparser)
     finally:
         if tmpmarks and os.path.exists(tmpmarks):
             if ok and not dry_run:
                 # the commits made it through, now we can commit
                 os.rename(tmpmarks, marks)
+                revs[:] = nparser.context.revs
             else:
                 os.remove(tmpmarks)
 
@@ -1031,12 +1035,18 @@ def do_push(parser):
         for line in parser:
             dump += line + '\n'
         die('DEBUG push:\n%s' % (dump))
+    revs = []
     for line in parser:
         if parser.check('push'):
-            do_push_refspec(parser, line.lstrip('push '))
+            localrevs = []
+            do_push_refspec(parser, line.lstrip('push '), localrevs)
+            revs.extend(localrevs)
         else:
             die('unhandled push command: %s' % (line))
     print
+    # at this stage, all external processes are done, marks files written
+    # so we can use those to update notes
+    update_notes(revs, "Update notes on push", True)
 
 def do_capabilities(parser):
     print "import"
