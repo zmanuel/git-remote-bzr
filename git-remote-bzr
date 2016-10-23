@@ -331,6 +331,7 @@ def export_branch(repo, name):
         tip_revno = 0
         total = 0
 
+    notes = set()
     for revid, _, seq, _ in revs:
 
         if marks.is_marked(revid):
@@ -338,6 +339,7 @@ def export_branch(repo, name):
 
         rev = repo.get_revision(revid)
         revno = seq[0]
+        notes.add(revid)
 
         parents = rev.parent_ids
         time = rev.timestamp
@@ -438,6 +440,10 @@ def export_branch(repo, name):
     print "reset %s" % ref
     print "from :%u" % rev_to_mark(revid)
     print
+
+    # update notes
+    desc = 'Notes for %s\n' % name
+    update_notes(notes, desc, False)
 
 def export_tag(repo, name):
     ref = '%s/tags/%s' % (prefix, name)
@@ -963,6 +969,61 @@ def do_push_refspec(parser, refspec):
                 os.rename(tmpmarks, marks)
             else:
                 os.remove(tmpmarks)
+
+def update_notes(revs, desc, run_import):
+    global last_note
+    if not 'last_note' in globals():
+        last_note = 0
+
+    if not revs:
+        return True
+
+    if run_import:
+        # spin up fast-import
+        gitmarks = os.path.join(marksdir, 'marks-git')
+        # marks should exist by now
+        # no export of marks since notes commits are not relevant
+        proc = subprocess.Popen(['git', 'fast-import', '--done', '--quiet',
+            '--import-marks=%s' % gitmarks], stdin=subprocess.PIPE, stdout=sys.stderr)
+        # now feed fast-import
+        dest = proc.stdin
+    else:
+        proc = None
+        dest = sys.stdout
+
+    import time as ptime
+    note_mark = marks.next_mark()
+    ref = "refs/notes/bzr"
+    dest.write("commit %s\n" % ref)
+    dest.write("mark :%d\n" % (note_mark))
+    dest.write("committer remote-bzr <> %d %s\n" % (ptime.time(), gittz(ptime.timezone)))
+    dest.write("data %d\n" % (len(desc)))
+    dest.write(desc + '\n')
+    # continue incrementally on current notes branch (whenever possible)
+    # to avoid wiping out present content upon fetch of new repo
+    # but track along with the previous ref as import goes along
+    current_note = git_rev_parse(ref)
+    if current_note and not last_note:
+        dest.write("from %s^0\n" % (ref))
+    elif last_note:
+        dest.write("from :%u\n" % last_note)
+    for rev in revs:
+        dest.write("N inline :%u\n" % marks.from_rev(rev))
+        dest.write("data %d\n" % (len(rev)))
+        dest.write(rev + '\n')
+    dest.write('\n')
+    last_note = note_mark
+
+    if proc:
+        dest.write('done\n')
+        dest.flush()
+        proc.wait()
+        # fail hard if this fails
+        # that prevents the marks file from being written
+        # so we can have a fresh look with a fetch
+        if proc.returncode:
+            die('notes update failed with return %d; recover with git fetch' %
+                (proc.returncode))
 
 def do_push(parser):
     if os.environ.get('GIT_REMOTE_BZR_DEBUG_PUSH'):
