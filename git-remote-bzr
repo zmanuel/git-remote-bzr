@@ -83,7 +83,7 @@ class Marks:
             return
 
         tmp = json.load(open(self.path))
-        self.tips = tmp['tips']
+        self.tips = []
         self.marks = tmp['marks']
         self.last_mark = tmp['last-mark']
 
@@ -121,15 +121,6 @@ class Marks:
         self.marks[rev] = mark
         self.rev_marks[mark] = rev
         self.last_mark = mark
-
-    def get_tip(self, branch):
-        try:
-            return str(self.tips[branch])
-        except KeyError:
-            return None
-
-    def set_tip(self, branch, tip):
-        self.tips[branch] = tip
 
 class Parser:
 
@@ -282,7 +273,7 @@ def export_files(tree, files):
 
 def export_branch(repo, name):
     ref = '%s/heads/%s' % (prefix, name)
-    tip = marks.get_tip(name)
+    tip = None
 
     branch = get_remote_branch(name)
     repo = branch.repository
@@ -290,7 +281,7 @@ def export_branch(repo, name):
     branch.lock_read()
     revs = branch.iter_merge_sorted_revisions(None, tip, 'exclude', 'forward')
     try:
-        tip_revno = branch.revision_id_to_revno(tip)
+        tip_revno = 0
         last_revno, _ = branch.last_revision_info()
         total = last_revno - tip_revno
     except bzrlib.errors.NoSuchRevision:
@@ -404,8 +395,6 @@ def export_branch(repo, name):
     print "reset %s" % ref
     print "from :%u" % rev_to_mark(revid)
     print
-
-    marks.set_tip(name, revid)
 
 def export_tag(repo, name):
     ref = '%s/tags/%s' % (prefix, name)
