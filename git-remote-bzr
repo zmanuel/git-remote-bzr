@@ -419,7 +419,7 @@ def export_head(repo):
 
 def do_import(parser):
     repo = parser.repo
-    path = os.path.join(dirname, 'marks-git')
+    path = os.path.join(marksdir, 'marks-git')
 
     print "feature done"
     if os.path.exists(path):
@@ -768,7 +768,7 @@ def do_capabilities(parser):
     print "refspec refs/heads/*:%s/heads/*" % prefix
     print "refspec refs/tags/*:%s/tags/*" % prefix
 
-    path = os.path.join(dirname, 'marks-git')
+    path = os.path.join(marksdir, 'marks-git')
 
     if os.path.exists(path):
         print "*import-marks %s" % path
@@ -971,6 +971,7 @@ def main(args):
     global dry_run
     global master_branch
     global local_proxy
+    global marksdir
 
     marks = None
     is_tmp = False
@@ -1016,9 +1017,10 @@ def main(args):
     if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
         bzrlib.ui.ui_factory.be_quiet(True)
 
+    marksdir = dirname
     repo = get_repo(url, alias)
 
-    marks_path = os.path.join(dirname, 'marks-int')
+    marks_path = os.path.join(marksdir, 'marks-int')
     marks = Marks(marks_path)
 
     parser = Parser(repo)
