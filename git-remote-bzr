@@ -722,7 +722,10 @@ def do_export(parser):
         if ref.startswith('refs/heads/'):
             name = ref[len('refs/heads/'):]
             branch = get_remote_branch(name)
-            branch.generate_revision_history(revid, marks.get_tip(name))
+            # a proxy branch is now always used
+            # following sets it to the targeted ref
+            # then we will push from there (diverged or not) minding dry-run
+            branch.generate_revision_history(revid)
 
             if name in peers:
                 peer = bzrlib.branch.Branch.open(peers[name],
