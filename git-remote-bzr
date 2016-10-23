@@ -825,7 +825,8 @@ def clone(path, remote_branch):
 def get_remote_branch(name):
     remote_branch = bzrlib.branch.Branch.open(branches[name],
                                               possible_transports=transports)
-    if isinstance(remote_branch.bzrdir.root_transport, bzrlib.transport.local.LocalTransport):
+    if not local_proxy and \
+      isinstance(remote_branch.bzrdir.root_transport, bzrlib.transport.local.LocalTransport):
         return remote_branch
 
     branch_path = os.path.join(dirname, 'clone', name)
@@ -869,6 +870,7 @@ def get_repo(url, alias):
     normal_url = bzrlib.urlutils.normalize_url(url)
     origin = bzrlib.bzrdir.BzrDir.open(url, possible_transports=transports)
     is_local = isinstance(origin.transport, bzrlib.transport.local.LocalTransport)
+    is_local = False if local_proxy else is_local
 
     shared_path = os.path.join(gitdir, 'bzr')
     try:
@@ -950,6 +952,7 @@ def main(args):
     global transports
     global force
     global master_branch
+    global local_proxy
 
     marks = None
     is_tmp = False
@@ -974,6 +977,9 @@ def main(args):
     peers = {}
     transports = []
     force = False
+    # also use a proxy repo for a local one;
+    # allows dry-run and streamlines lots of stuff
+    local_proxy = True
 
     if alias[5:] == url:
         is_tmp = True
