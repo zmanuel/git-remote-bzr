@@ -532,6 +532,42 @@ test_expect_success 'push new branch' '
 	test_cmp expected actual
 '
 
+test_expect_success 'push old:new branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git push origin master:new
+	git push origin HEAD^:refs/heads/new2
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids >../expected
+	) &&
+
+	(
+	cd bzrrepo/new &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids -r revno:1..last:2 >../expected
+	) &&
+
+	(
+	cd bzrrepo/new2 &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual
+'
+
 test_expect_success 'push tag' '
 	test_when_finished "rm -rf bzrrepo gitrepo" &&
 

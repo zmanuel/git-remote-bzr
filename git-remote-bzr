@@ -68,6 +68,40 @@ def get_config(config):
     output, _ = process.communicate()
     return output
 
+class GitMarks:
+
+    def __init__(self, path):
+      self.path = path
+      self.clear()
+      self.load()
+
+    def clear(self):
+        self.marks = {}
+        self.rev_marks = {}
+
+    def load(self):
+        if not os.path.exists(self.path):
+            return
+
+        for l in file(self.path):
+            m, c = l.strip().split(' ', 2)
+            m = int(m[1:])
+            self.marks[c] = m
+            self.rev_marks[m] = c
+
+    def store(self):
+        marks = self.rev_marks.keys()
+        marks.sort()
+        with open(self.path, 'w') as f:
+            for m in marks:
+                f.write(':%d %s\n' % (m, self.rev_marks[m]))
+
+    def from_rev(self, rev):
+        return self.marks[rev]
+
+    def to_rev(self, mark):
+        return str(self.rev_marks[mark])
+
 class Marks:
 
     def __init__(self, path):
@@ -122,12 +156,20 @@ class Marks:
         self.rev_marks[mark] = rev
         self.last_mark = mark
 
+class ParserContext:
+
+    def __init__(self):
+        # known context attributes
+        self.localref = None
+        self.remoteref = None
+
 class Parser:
 
-    def __init__(self, repo, cmdstream=sys.stdin):
+    def __init__(self, repo, cmdstream=sys.stdin, ctx=ParserContext()):
         self.repo = repo
         self.cmdstream = cmdstream
         self.line = self.get_line()
+        self.context = ctx
 
     def get_line(self):
         return self.cmdstream.readline().strip()
@@ -604,6 +646,8 @@ def parse_commit(parser):
     parents = []
 
     ref = parser[1]
+    remoteref = parser.context.remoteref
+    ref = parser[1] if not remoteref else remoteref
     parser.next()
 
     if ref.startswith('refs/heads/'):
@@ -677,6 +721,8 @@ def parse_commit(parser):
 
 def parse_reset(parser):
     ref = parser[1]
+    remoteref = parser.context.remoteref
+    ref = parser[1] if not remoteref else remoteref
     parser.next()
 
     # ugh
@@ -701,11 +747,45 @@ def select_tag_branch(refs):
         bname = heads[0]
     return bname
 
+def git_rev_parse(ref):
+    cmd = ['git', 'rev-parse', '--verify', '-q', ref]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    gc, _ = process.communicate()
+    gc = gc.strip()
+    return gc
+
+def get_bzr_revid(ref):
+    gc = git_rev_parse(ref)
+    try:
+        marks_path = os.path.join(marksdir, 'marks-git')
+        gitmarks = GitMarks(marks_path)
+        m = gitmarks.from_rev(gc)
+        revid = marks.to_rev(m)
+    except:
+        revid = None
+    return revid
+
 def do_export(parser):
     global parsed_refs
     parsed_refs = {}
 
     parser.next()
+
+    remoteref = parser.context.remoteref
+    if remoteref and not parser.line:
+        # if remoteref is in past exported
+        # git-fast-export might not produce anything at all
+        # that is ok'ish, we will determine parsed_ref another way
+        localref = parser.context.localref
+        revid = get_bzr_revid(localref)
+        if not revid:
+            # maybe the notes are not updated
+            # happens only on fetch for now ... let's ask for that
+            print "error %s no revid for ref %s" % (remoteref, localref)
+            return False
+        parsed_refs[remoteref] = revid
+        # now make parser happy
+        parser.line = 'done'
 
     for line in parser.each_block('done'):
         if parser.check('blob'):
@@ -846,13 +926,14 @@ def do_push_refspec(parser, refspec):
         else:
             print "ok %s" % (refs[1])
         return
-    # only basic refs supported, no renames
-    # may not be all one would expect from a native push (but hg is not native)
-    # but it covers at least as much as the export capability supports
-    if refs[0] != refs[1] or \
-            not (refs[0].startswith('refs/heads') or refs[0].startswith('refs/tags')):
-        print "error %s refspec %s not supported " % (refs[1], refspec)
+    # sanity check on remote ref
+    if not (refs[1].startswith('refs/heads') or refs[1].startswith('refs/tags')):
+        print "error %s refspec not supported " % refs[1]
         return
+    ctx = ParserContext()
+    if refs[0] != refs[1]:
+        ctx.remoteref = refs[1]
+        ctx.localref = refs[0]
     # ok, fire up git-fast-export and process it
     cmd = ['git', 'fast-export', '--use-done-feature']
     fast_export_options = get_config('remote-bzr.fast-export-options')
@@ -860,7 +941,7 @@ def do_push_refspec(parser, refspec):
         # nothing special here since move/copy not handled (yet?)
         fast_export_options = ''
     cmd.extend(fast_export_options.strip().split())
-    marks = os.path.join(dirname, 'marks-git')
+    marks = os.path.join(marksdir, 'marks-git')
     if os.path.exists(marks):
         cmd.append('--import-marks=%s' % marks)
     # no commit of marks if dry_run
@@ -868,13 +949,13 @@ def do_push_refspec(parser, refspec):
     # otherwise some commits may no longer be exported next time/try around
     tmpmarks = ''
     if not dry_run:
-        tmpmarks = os.path.join(dirname, 'marks-git-%d' % (os.getpid()))
+        tmpmarks = os.path.join(marksdir, 'marks-git-%d' % (os.getpid()))
         cmd.append('--export-marks=%s' % tmpmarks)
     cmd.append(refs[0])
     export = subprocess.Popen(cmd, stdin=None, stdout=subprocess.PIPE)
     ok = False
     try:
-        ok = do_export(Parser(parser.repo, export.stdout))
+        ok = do_export(Parser(parser.repo, export.stdout, ctx))
     finally:
         if tmpmarks and os.path.exists(tmpmarks):
             if ok and not dry_run:
