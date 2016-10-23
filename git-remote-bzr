@@ -1263,6 +1263,16 @@ def show_ui(show):
     if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
         bzrlib.ui.ui_factory.be_quiet(not show)
 
+def select_private_refs(alias):
+    # clean the old refs
+    refs = subprocess.Popen(['git', 'for-each-ref', \
+        '--format=delete %(refname)', 'refs/bzr'], stdout=subprocess.PIPE)
+    update = subprocess.Popen(['git', 'update-ref', '--stdin'], stdin=refs.stdout)
+    refs.stdout.close()  # helps with SIGPIPE
+    update.communicate()
+    # keep private implementation refs really private
+    return 'bzr/%s/refs' % alias
+
 def select_marks_dir(alias, gitdir):
     global force_need_fetch
     force_need_fetch = False
@@ -1339,7 +1349,7 @@ def main(args):
         is_tmp = True
         alias = hashlib.sha1(alias).hexdigest()
 
-    prefix = 'refs/bzr/%s' % alias
+    prefix = select_private_refs(alias)
     dirname = os.path.join(gitdir, 'bzr', alias)
 
     if not is_tmp:
