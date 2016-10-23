@@ -724,6 +724,20 @@ def do_export(parser):
             if name in peers:
                 peer = bzrlib.branch.Branch.open(peers[name],
                                                  possible_transports=transports)
+                # dry-run; check but no push
+                if dry_run and not force:
+                    peer.lock_read()
+                    try:
+                        cur_tip = peer.last_revision()
+                        if not peer.repository.get_graph().is_ancestor(cur_tip, revid):
+                            print "error %s non-fast forward" % ref
+                        else:
+                            print "ok %s" % ref
+                    finally:
+                        peer.unlock()
+                    continue
+
+                # really push
                 try:
                     peer.bzrdir.push_branch(branch, revision_id=revid,
                                             overwrite=force)
@@ -775,11 +789,14 @@ def get_bool_option(val):
         raise InvalidOptionValue()
 
 def do_option(parser):
-    global force
+    global dry_run, force
     opt, val = parser[1:3]
     try:
         if opt == 'force':
             force = get_bool_option(val)
+            print 'ok'
+        elif opt == 'dry-run':
+            dry_run = get_bool_option(val)
             print 'ok'
         else:
             print 'unsupported'
@@ -951,6 +968,7 @@ def main(args):
     global branches, peers
     global transports
     global force
+    global dry_run
     global master_branch
     global local_proxy
 
@@ -977,6 +995,7 @@ def main(args):
     peers = {}
     transports = []
     force = False
+    dry_run = False
     # also use a proxy repo for a local one;
     # allows dry-run and streamlines lots of stuff
     local_proxy = True
