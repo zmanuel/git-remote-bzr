@@ -124,12 +124,13 @@ class Marks:
 
 class Parser:
 
-    def __init__(self, repo):
+    def __init__(self, repo, cmdstream=sys.stdin):
         self.repo = repo
+        self.cmdstream = cmdstream
         self.line = self.get_line()
 
     def get_line(self):
-        return sys.stdin.readline().strip()
+        return self.cmdstream.readline().strip()
 
     def __getitem__(self, i):
         return self.line.split()[i]
@@ -159,7 +160,7 @@ class Parser:
             return None
         i = self.line.index(' ') + 1
         size = int(self.line[i:])
-        return sys.stdin.read(size)
+        return self.cmdstream.read(size)
 
     def get_author(self):
         m = RAW_AUTHOR_RE.match(self.line)
@@ -701,6 +702,9 @@ def select_tag_branch(refs):
     return bname
 
 def do_export(parser):
+    global parsed_refs
+    parsed_refs = {}
+
     parser.next()
 
     for line in parser.each_block('done'):
@@ -717,6 +721,7 @@ def do_export(parser):
         else:
             die('unhandled export command: %s' % line)
 
+    success = True
     for ref, revid in parsed_refs.iteritems():
         if force_need_fetch:
             print "error %s marks files changed to shared; need to fetch first" % ref
@@ -737,6 +742,7 @@ def do_export(parser):
                     br_to = branch.create_clone_on_transport(to_transport)
                 except:
                     print "error %s rejected" % ref
+                    success = False
                     continue
 
             if name in peers:
@@ -749,6 +755,7 @@ def do_export(parser):
                         cur_tip = peer.last_revision()
                         if not peer.repository.get_graph().is_ancestor(cur_tip, revid):
                             print "error %s non-fast forward" % ref
+                            success = False
                         else:
                             print "ok %s" % ref
                     finally:
@@ -761,6 +768,7 @@ def do_export(parser):
                                             overwrite=force)
                 except bzrlib.errors.DivergedBranches:
                     print "error %s non-fast forward" % ref
+                    success = False
                     continue
 
             try:
@@ -776,6 +784,7 @@ def do_export(parser):
             tagbranch = select_tag_branch(parsed_refs)
             if not tagbranch or not tagbranch in peers:
                 print "error %s set BZR_BRANCH to specify branch to push tag" % ref
+                success = False
                 continue
             peer = bzrlib.branch.Branch.open(peers[tagbranch],
                                              possible_transports=transports)
@@ -786,6 +795,7 @@ def do_export(parser):
                 existing_target = None
             if not force and existing_target not in (None, revid):
                 print "error %s already exists" % ref
+                success = False
                 continue
             if existing_target == revid:
                 print "ok %s up to date" % ref
@@ -798,11 +808,66 @@ def do_export(parser):
 
         print "ok %s" % ref
 
+    return success
+
+def do_push_refspec(parser, refspec):
+    global force
+
+    force = (refspec[0] == '+')
+    refs = refspec.strip('+').split(':')
+    # only basic refs supported, no renames etc
+    # may not be all one would expect from a native push (but hg is not native)
+    # but it covers at least as much as the export capability supports
+    if refs[0] != refs[1] or \
+            not (refs[0].startswith('refs/heads') or refs[0].startswith('refs/tags')):
+        print "error %s refspec %s not supported " % (refs[1], refspec)
+        return
+    # ok, fire up git-fast-export and process it
+    cmd = ['git', 'fast-export', '--use-done-feature']
+    fast_export_options = get_config('remote-bzr.fast-export-options')
+    if not fast_export_options:
+        # nothing special here since move/copy not handled (yet?)
+        fast_export_options = ''
+    cmd.extend(fast_export_options.strip().split())
+    marks = os.path.join(dirname, 'marks-git')
+    if os.path.exists(marks):
+        cmd.append('--import-marks=%s' % marks)
+    # no commit of marks if dry_run
+    # and only commit if all went ok,
+    # otherwise some commits may no longer be exported next time/try around
+    tmpmarks = ''
+    if not dry_run:
+        tmpmarks = os.path.join(dirname, 'marks-git-%d' % (os.getpid()))
+        cmd.append('--export-marks=%s' % tmpmarks)
+    cmd.append(refs[0])
+    export = subprocess.Popen(cmd, stdin=None, stdout=subprocess.PIPE)
+    ok = False
+    try:
+        ok = do_export(Parser(parser.repo, export.stdout))
+    finally:
+        if tmpmarks and os.path.exists(tmpmarks):
+            if ok and not dry_run:
+                # the commits made it through, now we can commit
+                os.rename(tmpmarks, marks)
+            else:
+                os.remove(tmpmarks)
+
+def do_push(parser):
+    if os.environ.get('GIT_REMOTE_BZR_DEBUG_PUSH'):
+        dump = ''
+        for line in parser:
+            dump += line + '\n'
+        die('DEBUG push:\n%s' % (dump))
+    for line in parser:
+        if parser.check('push'):
+            do_push_refspec(parser, line.lstrip('push '))
+        else:
+            die('unhandled push command: %s' % (line))
     print
 
 def do_capabilities(parser):
     print "import"
-    print "export"
+    print "push"
     print "refspec refs/heads/*:%s/heads/*" % prefix
     print "refspec refs/tags/*:%s/tags/*" % prefix
 
@@ -849,11 +914,17 @@ def do_list(parser):
 
     for_push = (parser.line.find('for-push') >= 0)
     parser.repo = get_repo(url, alias, for_push)
+    # for export command a ref's old_sha1 was taken from private namespace ref
+    # for push command a fake one is provided
+    # that avoids having the ref status reported as a new branch/tag
+    # (though it will be marked as FETCH_FIRST prior to push,
+    # but that's ok as we will provide proper status)
+    sha1 = 'f' * 40 if (for_push) else '?'
 
     for name in branches:
         if not master_branch:
             master_branch = name
-        print "? refs/heads/%s" % name
+        print "%s refs/heads/%s" % (sha1, name)
 
     if not master_branch:
         print
@@ -868,7 +939,7 @@ def do_list(parser):
             continue
         if not ref_is_valid(tag):
             continue
-        print "? refs/tags/%s" % tag
+        print "%s refs/tags/%s" % (sha1, tag)
         tags[tag] = revid
     branch.unlock()
 
@@ -1176,8 +1247,8 @@ def main(args):
             do_list(parser)
         elif parser.check('import'):
             do_import(parser)
-        elif parser.check('export'):
-            do_export(parser)
+        elif parser.check('push'):
+            do_push(parser)
             clean_private_marks_files()
         elif parser.check('option'):
             do_option(parser)
