@@ -716,6 +716,9 @@ def do_export(parser):
             die('unhandled export command: %s' % line)
 
     for ref, revid in parsed_refs.iteritems():
+        if force_need_fetch:
+            print "error %s marks files changed to shared; need to fetch first" % ref
+            continue
         if ref.startswith('refs/heads/'):
             name = ref[len('refs/heads/'):]
             branch = get_remote_branch(name)
@@ -958,6 +961,34 @@ def fix_path(alias, orig_url):
     cmd = ['git', 'config', 'remote.%s.url' % alias, "bzr::%s" % abs_url]
     subprocess.call(cmd)
 
+def select_marks_dir(alias, gitdir):
+    global force_need_fetch
+    force_need_fetch = False
+
+    # per-alias private marks files
+    private_gm = os.path.join(dirname, 'marks-git')
+    private_bzr = os.path.join(dirname, 'marks-int')
+    # shared marks files
+    shared_dir = os.path.join(gitdir, 'bzr')
+    shared_gm = os.path.join(shared_dir, 'marks-git')
+    shared_bzr = os.path.join(shared_dir, 'marks-int')
+    # promote private to shared if no shared yet, otherwise force fetch-first
+    for c in ((private_gm, shared_gm), (private_bzr, shared_bzr)):
+        p, s = c
+        if os.path.exists(p):
+            if not os.path.exists(s):
+                os.rename(p, s)
+            else:
+                # only remove when a fetch has been done
+                force_need_fetch = True
+    return shared_dir
+
+def clean_private_marks_files():
+    for p in ('marks-git', 'marks-int'):
+        pn = os.path.join(dirname, p)
+        if os.path.exists(pn):
+            os.remove(pn)
+
 def main(args):
     global marks, prefix, gitdir, dirname
     global tags, filenodes
@@ -1017,7 +1048,7 @@ def main(args):
     if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
         bzrlib.ui.ui_factory.be_quiet(True)
 
-    marksdir = dirname
+    marksdir = select_marks_dir(alias, gitdir)
     repo = get_repo(url, alias)
 
     marks_path = os.path.join(marksdir, 'marks-int')
@@ -1033,6 +1064,7 @@ def main(args):
             do_import(parser)
         elif parser.check('export'):
             do_export(parser)
+            clean_private_marks_files()
         elif parser.check('option'):
             do_option(parser)
         else:

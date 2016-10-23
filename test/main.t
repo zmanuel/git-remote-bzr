@@ -443,6 +443,7 @@ cat > expected <<\EOF
 EOF
 
 test_expect_success 'mode change' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
 	(
 	bzr init bzrrepo &&
 	cd bzrrepo &&
@@ -473,6 +474,38 @@ test_expect_success 'mode change' '
 	) &&
 
 	test_cmp expected actual
+'
+
+setup_repos() {
+	(
+	bzr init bzrrepo &&
+	cd bzrrepo &&
+	echo one > content &&
+	bzr add content &&
+	bzr commit -m one &&
+	echo two > content &&
+	bzr commit -m two
+	) &&
+
+	git clone bzr::bzrrepo gitrepo
+}
+
+test_expect_success 'migration to shared marks' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	mv .git/bzr/marks* .git/bzr/origin
+	git fetch origin
+	) &&
+
+	test ! -f gitrepo/.git/bzr/origin/marks-git &&
+	test ! -f gitrepo/.git/bzr/origin/marks-int
+
+	test -f gitrepo/.git/bzr/marks-git &&
+	test -f gitrepo/.git/bzr/marks-int
 '
 
 test_done
