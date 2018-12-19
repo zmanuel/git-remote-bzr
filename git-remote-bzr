@@ -308,14 +308,18 @@ def export_branch(repo, name):
         parents = rev.parent_ids
         time = rev.timestamp
         tz = rev.timezone
+        author_time = int(rev.properties.get('git-author-date', time))
+        author_tz = int(rev.properties.get('git-author-tz', tz))
         committer = rev.committer.encode('utf-8')
-        committer = "%s %u %s" % (fixup_user(committer), time, gittz(tz))
         authors = rev.get_apparent_authors()
         if authors:
             author = authors[0].encode('utf-8')
-            author = "%s %u %s" % (fixup_user(author), time, gittz(tz))
         else:
             author = committer
+
+        committer = "%s %u %s" % (fixup_user(committer), time, gittz(tz))
+        author = "%s %u %s" % (fixup_user(author), author_time, gittz(author_tz))
+
         msg = rev.message.encode('utf-8')
 
         msg += '\n'
@@ -657,12 +661,16 @@ def parse_commit(parser):
         files[path] = f
 
     committer, date, tz = committer
-    author, _, _ = author
+    author, author_date, author_tz = author
     parents = [mark_to_rev(p) for p in parents]
     revid = bzrlib.generate_ids.gen_revision_id(committer, date)
     props = {}
     props['branch-nick'] = branch.nick
     props['authors'] = author
+    if author_date != date:
+        props['git-author-date'] = str(author_date)
+    if author_tz != tz:
+        props['git-author-tz'] = str(author_tz)
 
     mtree = CustomTree(branch, revid, parents, files)
     changes = mtree.iter_changes()
