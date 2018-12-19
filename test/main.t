@@ -458,6 +458,7 @@ cat > expected <<\EOF
 EOF
 
 test_expect_success 'mode change' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
 	(
 	bzr init bzrrepo &&
 	cd bzrrepo &&
@@ -527,5 +528,165 @@ test_expect_success 'cherry pick round trip' '
 
 # cleanup
 rm -rf bzrrepo gitrepo gitrepo-cp expected actual
+
+setup_repos() {
+	(
+	bzr init bzrrepo &&
+	cd bzrrepo &&
+	echo one > content &&
+	bzr add content &&
+	bzr commit -m one &&
+	echo two > content &&
+	bzr commit -m two
+	) &&
+
+	git clone bzr::bzrrepo gitrepo
+}
+
+test_expect_success 'migration to shared marks' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	mv .git/bzr/marks* .git/bzr/origin
+	git fetch origin
+	) &&
+
+	test ! -f gitrepo/.git/bzr/origin/marks-git &&
+	test ! -f gitrepo/.git/bzr/origin/marks-int
+
+	test -f gitrepo/.git/bzr/marks-git &&
+	test -f gitrepo/.git/bzr/marks-int
+'
+
+test_expect_success 'push new branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git branch new &&
+	git push origin new
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids >../expected
+	) &&
+
+	(
+	cd bzrrepo/new &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual
+'
+
+test_expect_success 'push old:new branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git push origin master:new
+	git push origin HEAD^:refs/heads/new2
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids >../expected
+	) &&
+
+	(
+	cd bzrrepo/new &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids -r revno:1..last:2 >../expected
+	) &&
+
+	(
+	cd bzrrepo/new2 &&
+	bzr log --show-ids >../../actual
+	) &&
+
+	test_cmp expected actual
+'
+
+test_expect_success 'push tag' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git tag mytag &&
+	git push origin --tag mytag
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr tags | grep mytag
+	)
+'
+
+test_expect_success 'delete branch' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	git branch new &&
+	git push origin new &&
+	git push origin :new
+	) &&
+
+	# unfortunately not all is deleted, but at least this much
+	test ! -e bzrrepo/new/.bzr/branch
+'
+
+test_expect_success 'notes' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids | grep revision-id | sed "s/revision.id:.//" > ../expected
+	) &&
+
+	git --git-dir=gitrepo/.git log --pretty="tformat:%N" --notes=bzr | grep .. > actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'push updates notes' '
+	test_when_finished "rm -rf bzrrepo gitrepo" &&
+
+	setup_repos &&
+
+	(
+	cd gitrepo &&
+	echo extra > content &&
+	git commit -a -m extra &&
+	git push origin master
+	) &&
+
+	(
+	cd bzrrepo &&
+	bzr log --show-ids | grep revision-id | sed "s/revision.id:.//" > ../expected
+	) &&
+
+	git --git-dir=gitrepo/.git log --pretty="tformat:%N" --notes=bzr | grep .. > actual &&
+	test_cmp expected actual
+'
 
 test_done

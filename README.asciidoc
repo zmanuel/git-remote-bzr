@@ -10,13 +10,25 @@ To enable this, simply add the 'git-remote-bzr' script anywhere in your
 `$PATH`:
 
 --------------------------------------
-wget https://raw.github.com/felipec/git-remote-bzr/master/git-remote-bzr -O ~/bin/git-remote-bzr
+wget https://raw.github.com/mnauw/git-remote-bzr/master/git-remote-bzr -O ~/bin/git-remote-bzr
 chmod +x ~/bin/git-remote-bzr
 --------------------------------------
 
 That's it :)
 
 Obviously you will need Bazaar installed.
+
+****
+At present, this "working copy"/fork <<add-features, adds the following features>>
+(and I would prefer it is indeed rather a "working copy"
+to be appropriately merged upstream):
+
+* eliminates a number of <<limitations, limitations>> as mentioned below
+* avoids clutter of `refs/bzr/...` by keeping these implementation details really private
+* more robust and efficient fetching
+
+See sections below or sidemarked notes for more details.
+****
 
 == Notes ==
 
@@ -62,12 +74,22 @@ git fetch
 
 === Caveats ===
 
+[[limitations]]
 Limitations of the remote-helpers' framework apply. In particular, these
 commands don't work:
 
 * `git push origin :branch-to-delete`
 * `git push origin old:new` (it will push 'old') (patches available)
 * `git push --dry-run origin branch` (it will push) (patches available)
+
+****
+Actually, scratch the limitations above ascribed to the remote-helpers framework.
+They are not limitations of the framework, but are due to how the original
+implementation of 'git-remote-bzr' interacts with it.
+Using the remote-helpers framework in only a slightly different way has none
+of the above limitations.  See the <<no-limitations, relevant section>>
+below for more details.
+****
 
 == Other projects ==
 
@@ -80,7 +102,58 @@ this is the one distributed officially by the Git project:
 For a comparison between these and other projects go
 https://github.com/felipec/git/wiki/Comparison-of-git-remote-bzr-alternatives[here].
 
+[[no-limitations]]
+== Limitations (or not) ==
+
+The <<limitations, mentioned limitations>> are indeed
+limitations of the `export` capability of
+https://www.kernel.org/pub/software/scm/git/docs/gitremote-helpers.html[gitremote-helpers(1)]
+framework.  However, the framework also supports a `push` capability and when this
+is used appropriately in the remote helper the aforementioned limitations do not apply.
+In the case of `export` capability, git-core will internally invoke `git-fast-export`
+and the helper will process this data and hand over generated changesets to Bazaar.
+In the case of `push` capability, git informs the helper what (refs) should go where,
+and the helper is free to ponder about this and take the required action, such as
+to invoke `git-fast-export` itself (with suitable options) and process its output
+the same way as before (and over to Bazaar).
+
+And so;
+
+* `git push origin :branch-to-delete` will (mostly) delete `branch-to-delete` on remote
+(within some bzr limitations)
+* `git push --dry-run origin branch` will not touch the remote
+(or any local state, except for local helper proxy repo)
+* `git push origin old:new` will push `old` onto `new` in the remote
+
+[[add-features]]
+== Additional Features ==
+
+Other than <<no-limitations, removing the limitations>> as mentioned above,
+a number of issues (either so reported in
+https://github.com/felipec/git-remote-bzr/issues[issue tracking] or yet unreported)
+have been addressed here, e.g. creating a branch if needed when pushing,
+not creating several bzr revision-ids for same git commit, speeding up import
+of branches, etc
+
+For example, the `refs/bzr/...` refs are really an implementation detail
+that need not clutter up the (visible) ref space.  So, in as much as they
+are still relevant, these are now kept elsewhere out of sight.
+
+More importantly, a significantly more efficient workflow is achieved using
+one set of shared marks files for all remotes.
+The practical consequence is that fetching from a newly added remote bzr repo
+does not require another (lengthy) complete import
+(as the original clone) but will only fetch additional revisions (if any).
+The same goes for subsequent fetching from any bzr remote; what was fetched
+and imported from some remote need not be imported again from another.
+Operating in this shared mode also ensure pushing identical revisions
+to several remote branches, rather than coming up with a separate revision-id
+for each branch a commit is pushed to.
+
+The transition to using shared marks-files will happen mostly automatically,
+but for good measure it is advisable to fetch first from remotes (prior to
+any subsequent pushing).
+
 == Contributing ==
 
-Send your patches to the mailing list git-fc@googlegroups.com (no need to
-subscribe).
+Please file an issue with some patches or a pull request.

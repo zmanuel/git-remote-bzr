@@ -24,7 +24,7 @@ import sys
 
 import bzrlib
 if hasattr(bzrlib, "initialize"):
-    bzrlib.initialize()
+    bzrlib.initialize(stdout=sys.stderr)
 
 import bzrlib.plugin
 bzrlib.plugin.load_plugins()
@@ -68,6 +68,40 @@ def get_config(config):
     output, _ = process.communicate()
     return output
 
+class GitMarks:
+
+    def __init__(self, path):
+      self.path = path
+      self.clear()
+      self.load()
+
+    def clear(self):
+        self.marks = {}
+        self.rev_marks = {}
+
+    def load(self):
+        if not os.path.exists(self.path):
+            return
+
+        for l in file(self.path):
+            m, c = l.strip().split(' ', 2)
+            m = int(m[1:])
+            self.marks[c] = m
+            self.rev_marks[m] = c
+
+    def store(self):
+        marks = self.rev_marks.keys()
+        marks.sort()
+        with open(self.path, 'w') as f:
+            for m in marks:
+                f.write(':%d %s\n' % (m, self.rev_marks[m]))
+
+    def from_rev(self, rev):
+        return self.marks[rev]
+
+    def to_rev(self, mark):
+        return str(self.rev_marks[mark])
+
 class Marks:
 
     def __init__(self, path):
@@ -83,7 +117,7 @@ class Marks:
             return
 
         tmp = json.load(open(self.path))
-        self.tips = tmp['tips']
+        self.tips = []
         self.marks = tmp['marks']
         self.last_mark = tmp['last-mark']
 
@@ -122,23 +156,24 @@ class Marks:
         self.rev_marks[mark] = rev
         self.last_mark = mark
 
-    def get_tip(self, branch):
-        try:
-            return str(self.tips[branch])
-        except KeyError:
-            return None
+class ParserContext:
 
-    def set_tip(self, branch, tip):
-        self.tips[branch] = tip
+    def __init__(self):
+        # known context attributes
+        self.localref = None
+        self.remoteref = None
+        self.revs = []
 
 class Parser:
 
-    def __init__(self, repo):
+    def __init__(self, repo, cmdstream=sys.stdin, ctx=ParserContext()):
         self.repo = repo
+        self.cmdstream = cmdstream
         self.line = self.get_line()
+        self.context = ctx
 
     def get_line(self):
-        return sys.stdin.readline().strip()
+        return self.cmdstream.readline().strip()
 
     def __getitem__(self, i):
         return self.line.split()[i]
@@ -168,7 +203,7 @@ class Parser:
             return None
         i = self.line.index(' ') + 1
         size = int(self.line[i:])
-        return sys.stdin.read(size)
+        return self.cmdstream.read(size)
 
     def get_author(self):
         m = RAW_AUTHOR_RE.match(self.line)
@@ -282,7 +317,7 @@ def export_files(tree, files):
 
 def export_branch(repo, name):
     ref = '%s/heads/%s' % (prefix, name)
-    tip = marks.get_tip(name)
+    tip = None
 
     branch = get_remote_branch(name)
     repo = branch.repository
@@ -290,13 +325,14 @@ def export_branch(repo, name):
     branch.lock_read()
     revs = branch.iter_merge_sorted_revisions(None, tip, 'exclude', 'forward')
     try:
-        tip_revno = branch.revision_id_to_revno(tip)
+        tip_revno = 0
         last_revno, _ = branch.last_revision_info()
         total = last_revno - tip_revno
     except bzrlib.errors.NoSuchRevision:
         tip_revno = 0
         total = 0
 
+    notes = set()
     for revid, _, seq, _ in revs:
 
         if marks.is_marked(revid):
@@ -304,6 +340,7 @@ def export_branch(repo, name):
 
         rev = repo.get_revision(revid)
         revno = seq[0]
+        notes.add(revid)
 
         parents = rev.parent_ids
         time = rev.timestamp
@@ -409,7 +446,9 @@ def export_branch(repo, name):
     print "from :%u" % rev_to_mark(revid)
     print
 
-    marks.set_tip(name, revid)
+    # update notes
+    desc = 'Notes for %s\n' % name
+    update_notes(notes, desc, False)
 
 def export_tag(repo, name):
     ref = '%s/tags/%s' % (prefix, name)
@@ -423,7 +462,7 @@ def export_head(repo):
 
 def do_import(parser):
     repo = parser.repo
-    path = os.path.join(dirname, 'marks-git')
+    path = os.path.join(marksdir, 'marks-git')
 
     print "feature done"
     if os.path.exists(path):
@@ -618,13 +657,17 @@ def parse_commit(parser):
     parents = []
 
     ref = parser[1]
+    remoteref = parser.context.remoteref
+    ref = parser[1] if not remoteref else remoteref
     parser.next()
 
     if ref.startswith('refs/heads/'):
         name = ref[len('refs/heads/'):]
-        branch = get_remote_branch(name)
+        branch = get_remote_branch(name, True)
     else:
-        die('unknown ref')
+        # fall-back to master branch
+        # only the underlying repository shared storage is needed anyway
+        branch = get_remote_branch(master_branch)
 
     commit_mark = parser.get_mark()
     parser.next()
@@ -690,9 +733,12 @@ def parse_commit(parser):
 
     parsed_refs[ref] = revid
     marks.new_mark(revid, commit_mark)
+    parser.context.revs.append(revid)
 
 def parse_reset(parser):
     ref = parser[1]
+    remoteref = parser.context.remoteref
+    ref = parser[1] if not remoteref else remoteref
     parser.next()
 
     # ugh
@@ -706,8 +752,56 @@ def parse_reset(parser):
 
     parsed_refs[ref] = mark_to_rev(from_mark)
 
+def select_tag_branch(refs):
+    heads = [ref[len('refs/heads/'):] for ref in refs if ref.startswith('refs/heads')]
+    bname = os.getenv('BZR_BRANCH', None)
+    # environment setting always wins,
+    # otherwise auto-select if only 1 reasonable suggestion
+    if len(branches) == 1 and not bname:
+        bname = branches.keys()[0]
+    if len(heads) == 1 and not bname:
+        bname = heads[0]
+    return bname
+
+def git_rev_parse(ref):
+    cmd = ['git', 'rev-parse', '--verify', '-q', ref]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    gc, _ = process.communicate()
+    gc = gc.strip()
+    return gc
+
+def get_bzr_revid(ref):
+    gc = git_rev_parse(ref)
+    try:
+        marks_path = os.path.join(marksdir, 'marks-git')
+        gitmarks = GitMarks(marks_path)
+        m = gitmarks.from_rev(gc)
+        revid = marks.to_rev(m)
+    except:
+        revid = None
+    return revid
+
 def do_export(parser):
+    global parsed_refs
+    parsed_refs = {}
+
     parser.next()
+
+    remoteref = parser.context.remoteref
+    if remoteref and not parser.line:
+        # if remoteref is in past exported
+        # git-fast-export might not produce anything at all
+        # that is ok'ish, we will determine parsed_ref another way
+        localref = parser.context.localref
+        revid = get_bzr_revid(localref)
+        if not revid:
+            # maybe the notes are not updated
+            # happens only on fetch for now ... let's ask for that
+            print "error %s no revid for ref %s" % (remoteref, localref)
+            return False
+        parsed_refs[remoteref] = revid
+        # now make parser happy
+        parser.line = 'done'
 
     for line in parser.each_block('done'):
         if parser.check('blob'):
@@ -723,20 +817,54 @@ def do_export(parser):
         else:
             die('unhandled export command: %s' % line)
 
+    success = True
     for ref, revid in parsed_refs.iteritems():
+        if force_need_fetch:
+            print "error %s marks files changed to shared; need to fetch first" % ref
+            continue
         if ref.startswith('refs/heads/'):
             name = ref[len('refs/heads/'):]
-            branch = get_remote_branch(name)
-            branch.generate_revision_history(revid, marks.get_tip(name))
+            branch = get_remote_branch(name, True)
+            # a proxy branch is now always used
+            # following sets it to the targeted ref
+            # then we will push from there (diverged or not) minding dry-run
+            branch.generate_revision_history(revid)
+
+            if not name in peers and not dry_run:
+                # new branch within repo, or new branch/repo altogether
+                location = bzrlib.urlutils.join(url, name) if parser.repo else url
+                to_transport = bzrlib.transport.get_transport(location)
+                try:
+                    br_to = branch.create_clone_on_transport(to_transport)
+                except:
+                    print "error %s rejected" % ref
+                    success = False
+                    continue
 
             if name in peers:
                 peer = bzrlib.branch.Branch.open(peers[name],
                                                  possible_transports=transports)
+                # dry-run; check but no push
+                if dry_run and not force:
+                    peer.lock_read()
+                    try:
+                        cur_tip = peer.last_revision()
+                        if not peer.repository.get_graph().is_ancestor(cur_tip, revid):
+                            print "error %s non-fast forward" % ref
+                            success = False
+                        else:
+                            print "ok %s" % ref
+                    finally:
+                        peer.unlock()
+                    continue
+
+                # really push
                 try:
                     peer.bzrdir.push_branch(branch, revision_id=revid,
                                             overwrite=force)
                 except bzrlib.errors.DivergedBranches:
                     print "error %s non-fast forward" % ref
+                    success = False
                     continue
 
             try:
@@ -745,30 +873,207 @@ def do_export(parser):
             except bzrlib.errors.NoWorkingTree:
                 pass
         elif ref.startswith('refs/tags/'):
-            # TODO: implement tag push
-            print "error %s pushing tags not supported" % ref
-            continue
+            # the mapping from a branch (which is conceptually a bzr repo) to
+            # a git branch is a bit skewed, since now we do not really know
+            # to which bzr branch/repo to push this tag to
+            # all of them seems excessive, so we will try to pick one cleverly
+            tagbranch = select_tag_branch(parsed_refs)
+            if not tagbranch or not tagbranch in peers:
+                print "error %s set BZR_BRANCH to specify branch to push tag" % ref
+                success = False
+                continue
+            peer = bzrlib.branch.Branch.open(peers[tagbranch],
+                                             possible_transports=transports)
+            name = ref[len('refs/tags/'):]
+            try:
+                existing_target = peer.tags.lookup_tag(name)
+            except bzrlib.errors.NoSuchTag:
+                existing_target = None
+            if not force and existing_target not in (None, revid):
+                print "error %s already exists" % ref
+                success = False
+                continue
+            if existing_target == revid:
+                print "ok %s up to date" % ref
+                continue
+            elif not dry_run:
+                peer.tags.set_tag(name, revid)
         else:
             # transport-helper/fast-export bugs
             continue
 
         print "ok %s" % ref
 
+    return success
+
+def delete_branch(parser, ref):
+    bname = ref[len('refs/heads/'):]
+    # delete local (proxy or target)
+    ok = True
+    try:
+        if bname in branches:
+            branch = get_remote_branch(bname)
+            branch.bzrdir.destroy_branch(branch.name)
+            branch = None
+            branch_path = os.path.join(dirname, 'clone', bname)
+            if os.path.exists(branch_path):
+                shutil.rmtree(branch_path)
+        if bname in peers:
+            peer = bzrlib.branch.Branch.open(peers[bname],
+                                            possible_transports=transports)
+            peer.bzrdir.destroy_branch(peer.name)
+    except:
+        ok = False
+    # delete private ref
+    if ok:
+        pref = '%s/heads/%s' % (prefix, bname)
+        subprocess.call(['git', 'update-ref', '-d', pref])
+    return ok
+
+def do_push_refspec(parser, refspec, revs):
+    global force
+
+    force = (refspec[0] == '+')
+    refs = refspec.strip('+').split(':')
+    # check for delete
+    if (not refs[0]) and refs[1].startswith('refs/heads'):
+        if not dry_run and not delete_branch(parser, refs[1]):
+            print "error %s could not delete"% (refs[1])
+        else:
+            print "ok %s" % (refs[1])
+        return
+    # sanity check on remote ref
+    if not (refs[1].startswith('refs/heads') or refs[1].startswith('refs/tags')):
+        print "error %s refspec not supported " % refs[1]
+        return
+    ctx = ParserContext()
+    if refs[0] != refs[1]:
+        ctx.remoteref = refs[1]
+        ctx.localref = refs[0]
+    # ok, fire up git-fast-export and process it
+    cmd = ['git', 'fast-export', '--use-done-feature']
+    fast_export_options = get_config('remote-bzr.fast-export-options')
+    if not fast_export_options:
+        # nothing special here since move/copy not handled (yet?)
+        fast_export_options = ''
+    cmd.extend(fast_export_options.strip().split())
+    marks = os.path.join(marksdir, 'marks-git')
+    if os.path.exists(marks):
+        cmd.append('--import-marks=%s' % marks)
+    # no commit of marks if dry_run
+    # and only commit if all went ok,
+    # otherwise some commits may no longer be exported next time/try around
+    tmpmarks = ''
+    if not dry_run:
+        tmpmarks = os.path.join(marksdir, 'marks-git-%d' % (os.getpid()))
+        cmd.append('--export-marks=%s' % tmpmarks)
+    cmd.append(refs[0])
+    export = subprocess.Popen(cmd, stdin=None, stdout=subprocess.PIPE)
+    ok = False
+    try:
+        nparser = Parser(parser.repo, export.stdout, ctx)
+        ok = do_export(nparser)
+    finally:
+        if tmpmarks and os.path.exists(tmpmarks):
+            if ok and not dry_run:
+                # the commits made it through, now we can commit
+                os.rename(tmpmarks, marks)
+                revs[:] = nparser.context.revs
+            else:
+                os.remove(tmpmarks)
+
+def update_notes(revs, desc, run_import):
+    global last_note
+    if not 'last_note' in globals():
+        last_note = 0
+
+    if not revs:
+        return True
+
+    if run_import:
+        # spin up fast-import
+        gitmarks = os.path.join(marksdir, 'marks-git')
+        # marks should exist by now
+        # no export of marks since notes commits are not relevant
+        proc = subprocess.Popen(['git', 'fast-import', '--done', '--quiet',
+            '--import-marks=%s' % gitmarks], stdin=subprocess.PIPE, stdout=sys.stderr)
+        # now feed fast-import
+        dest = proc.stdin
+    else:
+        proc = None
+        dest = sys.stdout
+
+    import time as ptime
+    note_mark = marks.next_mark()
+    ref = "refs/notes/bzr"
+    dest.write("commit %s\n" % ref)
+    dest.write("mark :%d\n" % (note_mark))
+    dest.write("committer remote-bzr <> %d %s\n" % (ptime.time(), gittz(ptime.timezone)))
+    dest.write("data %d\n" % (len(desc)))
+    dest.write(desc + '\n')
+    # continue incrementally on current notes branch (whenever possible)
+    # to avoid wiping out present content upon fetch of new repo
+    # but track along with the previous ref as import goes along
+    current_note = git_rev_parse(ref)
+    if current_note and not last_note:
+        dest.write("from %s^0\n" % (ref))
+    elif last_note:
+        dest.write("from :%u\n" % last_note)
+    for rev in revs:
+        dest.write("N inline :%u\n" % marks.from_rev(rev))
+        dest.write("data %d\n" % (len(rev)))
+        dest.write(rev + '\n')
+    dest.write('\n')
+    last_note = note_mark
+
+    if proc:
+        dest.write('done\n')
+        dest.flush()
+        proc.wait()
+        # fail hard if this fails
+        # that prevents the marks file from being written
+        # so we can have a fresh look with a fetch
+        if proc.returncode:
+            die('notes update failed with return %d; recover with git fetch' %
+                (proc.returncode))
+
+def do_push(parser):
+    if os.environ.get('GIT_REMOTE_BZR_DEBUG_PUSH'):
+        dump = ''
+        for line in parser:
+            dump += line + '\n'
+        die('DEBUG push:\n%s' % (dump))
+    revs = []
+    for line in parser:
+        if parser.check('push'):
+            localrevs = []
+            do_push_refspec(parser, line.lstrip('push '), localrevs)
+            revs.extend(localrevs)
+        else:
+            die('unhandled push command: %s' % (line))
     print
+    # at this stage, all external processes are done, marks files written
+    # so we can use those to update notes
+    update_notes(revs, "Update notes on push", True)
 
 def do_capabilities(parser):
     print "import"
-    print "export"
+    print "push"
     print "refspec refs/heads/*:%s/heads/*" % prefix
     print "refspec refs/tags/*:%s/tags/*" % prefix
 
-    path = os.path.join(dirname, 'marks-git')
+    path = os.path.join(marksdir, 'marks-git')
 
     if os.path.exists(path):
         print "*import-marks %s" % path
     print "*export-marks %s" % path
 
     print "option"
+    # nothing really depends on the private refs being up to date
+    # (export is limited anyway by the current git marks)
+    # and they are not always updated correctly (dry-run, bookmark delete, ...)
+    # (might resolve some dry-run breakage also)
+    print "no-private-update"
     print
 
 class InvalidOptionValue(Exception):
@@ -783,11 +1088,14 @@ def get_bool_option(val):
         raise InvalidOptionValue()
 
 def do_option(parser):
-    global force
+    global dry_run, force
     opt, val = parser[1:3]
     try:
         if opt == 'force':
             force = get_bool_option(val)
+            print 'ok'
+        elif opt == 'dry-run':
+            dry_run = get_bool_option(val)
             print 'ok'
         else:
             print 'unsupported'
@@ -800,10 +1108,23 @@ def ref_is_valid(name):
 def do_list(parser):
     global master_branch
 
+    for_push = (parser.line.find('for-push') >= 0)
+    parser.repo = get_repo(url, alias, for_push)
+    # for export command a ref's old_sha1 was taken from private namespace ref
+    # for push command a fake one is provided
+    # that avoids having the ref status reported as a new branch/tag
+    # (though it will be marked as FETCH_FIRST prior to push,
+    # but that's ok as we will provide proper status)
+    sha1 = 'f' * 40 if (for_push) else '?'
+
     for name in branches:
         if not master_branch:
             master_branch = name
-        print "? refs/heads/%s" % name
+        print "%s refs/heads/%s" % (sha1, name)
+
+    if not master_branch:
+        print
+        return
 
     branch = get_remote_branch(master_branch)
     branch.lock_read()
@@ -814,7 +1135,7 @@ def do_list(parser):
             continue
         if not ref_is_valid(tag):
             continue
-        print "? refs/tags/%s" % tag
+        print "%s refs/tags/%s" % (sha1, tag)
         tags[tag] = revid
     branch.unlock()
 
@@ -830,13 +1151,73 @@ def clone(path, remote_branch):
     repo.fetch(remote_branch.repository)
     return remote_branch.sprout(bdir, repository=repo)
 
-def get_remote_branch(name):
+def create_proxy_branch(name):
+    def try_branch_open(location):
+        bb = None
+        if os.path.exists(location):
+            try:
+                bb = bzrlib.branch.Branch.open(location)
+            except:
+                pass
+        return bb
+    # just need another place to store a branch tip
+    # so clone something we have
+    mb = None
+    for b in branches:
+        location = os.path.join(dirname, 'clone', b)
+        mb = try_branch_open(location)
+        if mb:
+            break
+    # no suitable source branch within this repo
+    # maybe repo does not exist yet, let's broaden search
+    if not mb:
+        for d in os.listdir(os.path.join(gitdir, 'bzr')):
+            cdir = os.path.join(gitdir, 'bzr', d, 'clone')
+            if d == '.bzr' or not os.path.isdir(cdir):
+                continue
+            for b in os.listdir(cdir):
+                location = os.path.join(cdir, b)
+                mb = try_branch_open(location)
+                if mb:
+                    break
+            if mb:
+                break
+    if not mb:
+        die('could not create branch; fetch first')
+    location = os.path.join(dirname, 'clone', name)
+    # ensure clean slate start
+    if os.path.exists(location):
+        shutil.rmtree(location)
+    cdir = os.path.join(dirname, 'clone')
+    if not os.path.exists(cdir):
+        os.makedirs(cdir)
+    return mb.bzrdir.sprout(location, create_tree_if_local=False).open_branch()
+
+def get_remote_branch(name, create=False):
+    global proxys
+    if not 'proxys' in globals():
+        proxys = {}
+    # use a branch cache to avoid fetching upon every call
+    # (which would amount to every commit when pushing)
+    branch = proxys.get(name, None)
+    if branch:
+        return branch
+
+    if not name in branches and create:
+        branch = create_proxy_branch(name)
+        proxys[name] = branch
+        return branch
+
     remote_branch = bzrlib.branch.Branch.open(branches[name],
                                               possible_transports=transports)
-    if isinstance(remote_branch.bzrdir.root_transport, bzrlib.transport.local.LocalTransport):
+    if not local_proxy and \
+      isinstance(remote_branch.bzrdir.root_transport, bzrlib.transport.local.LocalTransport):
         return remote_branch
 
     branch_path = os.path.join(dirname, 'clone', name)
+
+    # all this could take some doing, so show some progress
+    show_ui(True)
 
     try:
         branch = bzrlib.branch.Branch.open(branch_path,
@@ -850,8 +1231,11 @@ def get_remote_branch(name):
             branch.pull(remote_branch, overwrite=True)
         except bzrlib.errors.DivergedBranches:
             # use remote branch for now
-            return remote_branch
+            branch = remote_branch
 
+    show_ui(False)
+
+    proxys[name] = branch
     return branch
 
 def find_branches(repo):
@@ -873,10 +1257,17 @@ def find_branches(repo):
         else:
             yield name, branch.base
 
-def get_repo(url, alias):
+def get_repo(url, alias, nothrow=True):
     normal_url = bzrlib.urlutils.normalize_url(url)
-    origin = bzrlib.bzrdir.BzrDir.open(url, possible_transports=transports)
+    try:
+        origin = bzrlib.bzrdir.BzrDir.open(url, possible_transports=transports)
+    except bzrlib.errors.NotBranchError:
+        # allow create-upon-push to LaunchPad
+        if nothrow and url[0:3] == 'lp:':
+            return None
+        raise
     is_local = isinstance(origin.transport, bzrlib.transport.local.LocalTransport)
+    is_local = False if local_proxy else is_local
 
     shared_path = os.path.join(gitdir, 'bzr')
     try:
@@ -947,6 +1338,48 @@ def fix_path(alias, orig_url):
     cmd = ['git', 'config', 'remote.%s.url' % alias, "bzr::%s" % abs_url]
     subprocess.call(cmd)
 
+def show_ui(show):
+    if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
+        bzrlib.ui.ui_factory.be_quiet(not show)
+
+def select_private_refs(alias):
+    # clean the old refs
+    refs = subprocess.Popen(['git', 'for-each-ref', \
+        '--format=delete %(refname)', 'refs/bzr'], stdout=subprocess.PIPE)
+    update = subprocess.Popen(['git', 'update-ref', '--stdin'], stdin=refs.stdout)
+    refs.stdout.close()  # helps with SIGPIPE
+    update.communicate()
+    # keep private implementation refs really private
+    return 'bzr/%s/refs' % alias
+
+def select_marks_dir(alias, gitdir):
+    global force_need_fetch
+    force_need_fetch = False
+
+    # per-alias private marks files
+    private_gm = os.path.join(dirname, 'marks-git')
+    private_bzr = os.path.join(dirname, 'marks-int')
+    # shared marks files
+    shared_dir = os.path.join(gitdir, 'bzr')
+    shared_gm = os.path.join(shared_dir, 'marks-git')
+    shared_bzr = os.path.join(shared_dir, 'marks-int')
+    # promote private to shared if no shared yet, otherwise force fetch-first
+    for c in ((private_gm, shared_gm), (private_bzr, shared_bzr)):
+        p, s = c
+        if os.path.exists(p):
+            if not os.path.exists(s):
+                os.rename(p, s)
+            else:
+                # only remove when a fetch has been done
+                force_need_fetch = True
+    return shared_dir
+
+def clean_private_marks_files():
+    for p in ('marks-git', 'marks-int'):
+        pn = os.path.join(dirname, p)
+        if os.path.exists(pn):
+            os.remove(pn)
+
 def main(args):
     global marks, prefix, gitdir, dirname
     global tags, filenodes
@@ -956,8 +1389,12 @@ def main(args):
     global is_tmp
     global branches, peers
     global transports
+    global url, alias
     global force
+    global dry_run
     global master_branch
+    global local_proxy
+    global marksdir
 
     marks = None
     is_tmp = False
@@ -982,12 +1419,16 @@ def main(args):
     peers = {}
     transports = []
     force = False
+    dry_run = False
+    # also use a proxy repo for a local one;
+    # allows dry-run and streamlines lots of stuff
+    local_proxy = True
 
     if alias[5:] == url:
         is_tmp = True
         alias = hashlib.sha1(alias).hexdigest()
 
-    prefix = 'refs/bzr/%s' % alias
+    prefix = select_private_refs(alias)
     dirname = os.path.join(gitdir, 'bzr', alias)
 
     if not is_tmp:
@@ -996,12 +1437,12 @@ def main(args):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
 
-    if hasattr(bzrlib.ui.ui_factory, 'be_quiet'):
-        bzrlib.ui.ui_factory.be_quiet(True)
+    show_ui(False)
 
-    repo = get_repo(url, alias)
+    marksdir = select_marks_dir(alias, gitdir)
+    repo = None # will get it later
 
-    marks_path = os.path.join(dirname, 'marks-int')
+    marks_path = os.path.join(marksdir, 'marks-int')
     marks = Marks(marks_path)
 
     parser = Parser(repo)
@@ -1012,8 +1453,9 @@ def main(args):
             do_list(parser)
         elif parser.check('import'):
             do_import(parser)
-        elif parser.check('export'):
-            do_export(parser)
+        elif parser.check('push'):
+            do_push(parser)
+            clean_private_marks_files()
         elif parser.check('option'):
             do_option(parser)
         else:
