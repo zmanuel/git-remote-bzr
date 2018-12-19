@@ -475,4 +475,42 @@ test_expect_success 'mode change' '
 	test_cmp expected actual
 '
 
+rm -rf bzrrepo gitrepo gitrepo-cp expected actual
+
+test_expect_success 'cherry pick round trip' '
+	(
+	bzr init bzrrepo &&
+	cd bzrrepo &&
+	echo one > content &&
+	bzr add content &&
+	bzr commit -m one
+	) &&
+
+	git clone "bzr::bzrrepo" gitrepo &&
+    (
+    cd gitrepo &&
+    git checkout -b cherry-source &&
+    echo two > unrelated &&
+    git add unrelated &&
+    git commit -a -m two &&
+    echo three > content &&
+    git commit -a -m three --date=2018-12-17T17:01:00 &&
+    git checkout master &&
+    git cherry-pick cherry-source &&
+    git push &&
+    git log --format=fuller > ../expected
+    ) &&
+
+    (
+    git clone "bzr::bzrrepo" gitrepo-cp &&
+    cd gitrepo-cp &&
+    git log  --format=fuller > ../actual
+    ) &&
+
+    test_cmp expected actual
+'
+
+# cleanup
+rm -rf bzrrepo gitrepo gitrepo-cp expected actual
+
 test_done
