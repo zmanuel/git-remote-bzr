@@ -46,6 +46,7 @@ import shutil
 import hashlib
 import urlparse
 import subprocess
+import codecs
 
 NAME_RE = re.compile('^([^<>]+)')
 AUTHOR_RE = re.compile('^([^<>]+?)? ?[<>]([^<>]*)(?:$|>)')
@@ -308,8 +309,14 @@ def export_branch(repo, name):
         parents = rev.parent_ids
         time = rev.timestamp
         tz = rev.timezone
-        author_time = int(rev.properties.get('git-author-date', time))
-        author_tz = int(rev.properties.get('git-author-tz', tz))
+        try:
+            author_time = int(rev.properties.get('git-author-date', time))
+        except:
+            author_time = time
+        try:
+            author_tz = int(rev.properties.get('git-author-tz', tz))
+        except:
+            author_tz = tz
         committer = rev.committer.encode('utf-8')
         authors = rev.get_apparent_authors()
         if authors:
@@ -320,9 +327,18 @@ def export_branch(repo, name):
         committer = "%s %u %s" % (fixup_user(committer), time, gittz(tz))
         author = "%s %u %s" % (fixup_user(author), author_time, gittz(author_tz))
 
+        author = rev.properties.get('git-author', author.decode('utf-8', 'replace')).encode('utf8')
+        committer = rev.properties.get('git-committer', committer.decode('utf-8', 'replace')).encode('utf8')
+
         msg = rev.message.encode('utf-8')
 
         msg += '\n'
+
+        if 'git-commit-message' in rev.properties:
+            try:
+                msg = codecs.decode(rev.properties['git-commit-message'], 'base64')
+            except:
+                pass
 
         if rev.properties.has_key('file-info'):
             from bzrlib import bencode
@@ -629,8 +645,10 @@ def parse_commit(parser):
     commit_mark = parser.get_mark()
     parser.next()
     author = parser.get_author()
+    author_raw = parser.line.decode("utf8")
     parser.next()
     committer = parser.get_author()
+    committer_raw = parser.line.decode("utf8")
     parser.next()
     data = parser.get_data()
     parser.next()
@@ -641,9 +659,12 @@ def parse_commit(parser):
         parents.append(parser.get_mark())
         parser.next()
 
-    # fast-export adds an extra newline
+    original_commit_msg = data
+
+    # fast-export adds an extra newline (sometimes)
     if data[-1] == '\n':
         data = data[:-1]
+    data = data.replace('\r','')
 
     files = {}
 
@@ -667,10 +688,21 @@ def parse_commit(parser):
     props = {}
     props['branch-nick'] = branch.nick
     props['authors'] = author
+
+    committer_rt = "comitter %s %u %s" % (fixup_user(committer), date, gittz(tz))
+    author_rt = "author %s %u %s" % (fixup_user(author), date, gittz(tz))
+
+    if author_rt != author_raw and author_raw.startswith('author '):
+        props['git-author'] = author_raw[len('author '):]
+    if committer_rt != committer_raw and committer_raw.startswith('committer '):
+        props['git-committer'] = committer_raw[len('committer '):]
+
     if author_date != date:
         props['git-author-date'] = str(author_date)
     if author_tz != tz:
         props['git-author-tz'] = str(author_tz)
+    if original_commit_msg != data + '\n':
+        props['git-commit-message'] = codecs.encode(original_commit_msg, 'base64')
 
     mtree = CustomTree(branch, revid, parents, files)
     changes = mtree.iter_changes()
