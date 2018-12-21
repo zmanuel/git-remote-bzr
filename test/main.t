@@ -57,7 +57,9 @@ test_expect_success 'pushing' '
 	(
 	cd gitrepo &&
 	echo three > content &&
-	git commit -a -m three &&
+	echo "four\rno, three" > message &&
+	git commit -a -F message &&
+	rm -f message &&
 	git push
 	) &&
 
