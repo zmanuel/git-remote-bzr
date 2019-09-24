@@ -360,7 +360,6 @@ def export_branch(repo, name):
         committer = rev.properties.get('git-committer', committer.decode('utf-8', 'replace')).encode('utf8')
 
         msg = rev.message.encode('utf-8')
-
         msg += '\n'
 
         if 'git-commit-message-base64' in rev.properties:
@@ -703,6 +702,9 @@ def parse_commit(parser):
 
     # bzr does not accept \r
     data = data.replace('\r','')
+
+    # bzr does not accept \r
+    data = data.replace('\r', '')
 
     files = {}
 

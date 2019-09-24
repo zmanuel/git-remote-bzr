@@ -209,18 +209,18 @@ test_expect_success 'different authors' '
 '
 
 test_expect_success 'different authors roundtrip' '
-    (
-    cd gitrepo &&
-    git log --format=fuller > ../expected
-    ) &&
+	(
+	cd gitrepo &&
+	git log --format=fuller > ../expected
+	) &&
 
-    (
-    git clone "bzr::bzrrepo" gitrepo-cp &&
-    cd gitrepo-cp &&
-    git log --format=fuller > ../actual
-    ) &&
+	(
+	git clone "bzr::bzrrepo" gitrepo-cp &&
+	cd gitrepo-cp &&
+	git log --format=fuller > ../actual
+	) &&
 
-    test_cmp expected actual
+	test_cmp expected actual
 '
 
 # cleanup previous stuff
@@ -461,6 +461,10 @@ EOF
 
 test_expect_success 'mode change' '
 	test_when_finished "rm -rf bzrrepo gitrepo" &&
+<<<<<<< HEAD
+=======
+
+>>>>>>> upstream/master
 	(
 	bzr init bzrrepo &&
 	cd bzrrepo &&
@@ -493,8 +497,11 @@ test_expect_success 'mode change' '
 	test_cmp expected actual
 '
 
+<<<<<<< HEAD
 rm -rf bzrrepo gitrepo gitrepo-cp expected actual
 
+=======
+>>>>>>> upstream/master
 # commit without a newline at the end
 cat > fast-import <<\EOF
 blob
@@ -510,8 +517,14 @@ data 10
 no newlineM 100644 :1 content
 EOF
 
+<<<<<<< HEAD
 
 test_expect_success 'commit messages roundtrip' '
+=======
+test_expect_success 'commit messages roundtrip' '
+	test_when_finished "rm -rf bzrrepo gitrepo gitrepo-cp" &&
+
+>>>>>>> upstream/master
 	(
 	bzr init bzrrepo &&
 	cd bzrrepo &&
@@ -521,6 +534,7 @@ test_expect_success 'commit messages roundtrip' '
 	) &&
 
 	git clone "bzr::bzrrepo" gitrepo &&
+<<<<<<< HEAD
     rm -rf bzrrepo gitrepo/.git/bzr &&
 	bzr init bzrrepo &&
     (
@@ -668,11 +682,31 @@ test_expect_success 'push old:new branch' '
 	(
 	cd bzrrepo/new2 &&
 	bzr log --show-ids >../../actual
+=======
+	rm -rf bzrrepo gitrepo/.git/bzr &&
+	bzr init bzrrepo &&
+	(
+	cd gitrepo &&
+	git fast-import < ../fast-import &&
+	git reset e2abe971b29119aaee046b6f7bd4222cbb8079de &&
+	echo two > content &&
+	echo "three\rno, two" > message &&
+	git commit -a -F message &&
+	git push --force &&
+	git log --format=fuller > ../expected
+	) &&
+
+	(
+	git clone "bzr::bzrrepo" gitrepo-cp &&
+	cd gitrepo-cp &&
+	git log  --format=fuller > ../actual
+>>>>>>> upstream/master
 	) &&
 
 	test_cmp expected actual
 '
 
+<<<<<<< HEAD
 test_expect_success 'push tag' '
 	test_when_finished "rm -rf bzrrepo gitrepo" &&
 
@@ -738,6 +772,40 @@ test_expect_success 'push updates notes' '
 	) &&
 
 	git --git-dir=gitrepo/.git log --pretty="tformat:%N" --notes=bzr | grep .. > actual &&
+=======
+test_expect_success 'cherry pick roundtrip' '
+	test_when_finished "rm -rf bzrrepo gitrepo gitrepo-cp" &&
+
+	(
+	bzr init bzrrepo &&
+	cd bzrrepo &&
+	echo one > content &&
+	bzr add content &&
+	bzr commit -m one
+	) &&
+
+	git clone "bzr::bzrrepo" gitrepo &&
+	(
+	cd gitrepo &&
+	git checkout -b cherry-source &&
+	echo two > unrelated &&
+	git add unrelated &&
+	git commit -a -m two &&
+	echo three > content &&
+	git commit -a -m three --date=2018-12-17T17:01:00 &&
+	git checkout master &&
+	git cherry-pick cherry-source &&
+	git push &&
+	git log --format=fuller > ../expected
+	) &&
+
+	(
+	git clone "bzr::bzrrepo" gitrepo-cp &&
+	cd gitrepo-cp &&
+	git log  --format=fuller > ../actual
+	) &&
+
+>>>>>>> upstream/master
 	test_cmp expected actual
 '
 
